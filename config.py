@@ -1,14 +1,14 @@
 """
 config.py — Single source of truth for all environment variables and AI clients.
 """
-import os
 import logging
+import os
 import warnings
 
+import anthropic
 import google.generativeai as genai
 from dotenv import load_dotenv
 from openai import OpenAI
-import anthropic
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 load_dotenv()
@@ -21,27 +21,41 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ── Telegram ──────────────────────────────────────────────────────────────────
-BOT_TOKEN          = os.getenv("TELEGRAM_BOT_TOKEN")
-AUTHORIZED_USER_ID = os.getenv("AUTHORIZED_USER_ID")
+BOT_TOKEN          = os.getenv("TELEGRAM_BOT_TOKEN", "")
+AUTHORIZED_USER_ID = os.getenv("AUTHORIZED_USER_ID", "")
 
 # ── AI keys ───────────────────────────────────────────────────────────────────
-GEMINI_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
 CLAUDE_KEY = os.getenv("CLAUDE_API_KEY")
 OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 
 # ── Email ─────────────────────────────────────────────────────────────────────
-EMAIL_USERNAME   = os.getenv("EMAIL_USERNAME")
-EMAIL_PASSWORD   = os.getenv("EMAIL_PASSWORD")
-EMAIL_IMAP       = os.getenv("EMAIL_IMAP_SERVER")
-EMAIL_SMTP       = os.getenv("EMAIL_SMTP_SERVER")
-EMAIL_SMTP_PORT  = int(os.getenv("EMAIL_SMTP_PORT", 465))
+EMAIL_USERNAME  = os.getenv("EMAIL_USERNAME", "")
+EMAIL_PASSWORD  = os.getenv("EMAIL_PASSWORD", "")
+EMAIL_IMAP      = os.getenv("EMAIL_IMAP_SERVER", "imap.gmail.com")
+EMAIL_SMTP      = os.getenv("EMAIL_SMTP_SERVER", "smtp.gmail.com")
+EMAIL_SMTP_PORT = int(os.getenv("EMAIL_SMTP_PORT", 465))
 
-# ── Polling ───────────────────────────────────────────────────────────────────
+# ── Polling / monitoring ──────────────────────────────────────────────────────
 POLL_INTERVAL_MINS = int(os.getenv("POLL_INTERVAL_MINUTES", 5))
 
+# ── Render / webhook ──────────────────────────────────────────────────────────
+# Set WEBHOOK_URL to your Render service URL (e.g. https://mybot.onrender.com)
+# to enable webhook mode. Leave unset to use polling (local dev).
+WEBHOOK_URL  = os.getenv("WEBHOOK_URL")          # e.g. https://mybot.onrender.com
+WEBHOOK_PORT = int(os.getenv("PORT", 8443))       # Render injects PORT automatically
+
 # ── Validation ────────────────────────────────────────────────────────────────
-if not all([BOT_TOKEN, AUTHORIZED_USER_ID, GEMINI_KEY]):
-    logger.error("Missing critical environment variables. Check your .env file.")
+_missing = [k for k, v in {
+    "TELEGRAM_BOT_TOKEN": BOT_TOKEN,
+    "AUTHORIZED_USER_ID": AUTHORIZED_USER_ID,
+    "GEMINI_API_KEY":     GEMINI_KEY,
+    "EMAIL_USERNAME":     EMAIL_USERNAME,
+    "EMAIL_PASSWORD":     EMAIL_PASSWORD,
+}.items() if not v]
+
+if _missing:
+    logger.error("Missing required env vars: %s — check your .env file.", ", ".join(_missing))
     raise SystemExit(1)
 
 # ── AI client initialisation ──────────────────────────────────────────────────

@@ -2,7 +2,7 @@
 handlers/files.py — Inbound file/media handler and email attachment forwarding.
 
 Responsibilities:
-  • Accept files/photos/video/audio sent to the bot and save as pending attachment.
+  • Accept files/photos/video/audio and save as pending attachment.
   • Forward email attachments to a Telegram chat.
   • /clear command to discard a pending attachment.
 """
@@ -14,16 +14,12 @@ import tempfile
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from config import AUTHORIZED_USER_ID
 from email_utils import cleanup_file, get_attachments, save_to_tempfile
+from utils import is_authorized
 
 logger = logging.getLogger(__name__)
 
 _IMAGE_MIME = {"image/jpeg", "image/png", "image/gif", "image/webp"}
-
-
-def is_authorized(update: Update) -> bool:
-    return str(update.effective_user.id) == AUTHORIZED_USER_ID
 
 
 # ── Inbound: Telegram → pending attachment ────────────────────────────────────
@@ -33,11 +29,10 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not is_authorized(update):
         return
 
-    file_obj, filename, mime_type = _extract_file_info(update.message)
+    file_obj, filename, mime_type = await _resolve_file(update.message)
     if not file_obj:
         return
 
-    # Clean up any previously saved pending file
     old = context.user_data.get("pending_attachment")
     if old:
         cleanup_file(old["path"])
@@ -51,10 +46,9 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "filename":  filename,
         "mime_type": mime_type,
     }
-
     await update.message.reply_text(
         f"📎 *File saved:* `{filename}`\n\n"
-        "Use `/send`, `/reply`, or `/draft` to include it in your next email.\n"
+        "Use `/send`, `/reply`, or `/draft` to attach it to your next email.\n"
         "Use `/clear` to discard.",
         parse_mode="Markdown",
     )
@@ -105,29 +99,11 @@ async def forward_email_attachments(
 
 # ── Private helpers ───────────────────────────────────────────────────────────
 
-def _extract_file_info(message) -> tuple:
-    """Return (file_obj, filename, mime_type) from a Telegram message, or (None, None, None)."""
+async def _resolve_file(message) -> tuple:
+    """Return (file_obj, filename, mime_type) from any supported Telegram message type."""
     if message.document:
         f = message.document
-        return (
-            None,  # resolved async below
-            f.file_name or f"document_{f.file_unique_id}",
-            f.mime_type or "application/octet-stream",
-        )
-    # Resolve per-type async getters inline — caller must await
-    return None, None, None
-
-
-# Override with a proper async version used in handle_file
-async def _resolve_file(message):
-    """Return (file_coroutine, filename, mime_type) from any supported message type."""
-    if message.document:
-        f = message.document
-        return (
-            await f.get_file(),
-            f.file_name or f"document_{f.file_unique_id}",
-            f.mime_type or "application/octet-stream",
-        )
+        return await f.get_file(), f.file_name or f"document_{f.file_unique_id}", f.mime_type or "application/octet-stream"
     if message.photo:
         p = message.photo[-1]
         return await p.get_file(), f"photo_{p.file_unique_id}.jpg", "image/jpeg"
@@ -141,35 +117,3 @@ async def _resolve_file(message):
         vo = message.voice
         return await vo.get_file(), f"voice_{vo.file_unique_id}.ogg", "audio/ogg"
     return None, None, None
-
-
-# Patch handle_file to use the async resolver
-async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:  # noqa: F811
-    """Save any file/photo/video/audio sent by the user as a pending attachment."""
-    if not is_authorized(update):
-        return
-
-    file_obj, filename, mime_type = await _resolve_file(update.message)
-    if not file_obj:
-        return
-
-    old = context.user_data.get("pending_attachment")
-    if old:
-        cleanup_file(old["path"])
-
-    tmp_dir   = tempfile.mkdtemp()
-    file_path = os.path.join(tmp_dir, filename)
-    await file_obj.download_to_drive(file_path)
-
-    context.user_data["pending_attachment"] = {
-        "path":      file_path,
-        "filename":  filename,
-        "mime_type": mime_type,
-    }
-
-    await update.message.reply_text(
-        f"📎 *File saved:* `{filename}`\n\n"
-        "Use `/send`, `/reply`, or `/draft` to include it in your next email.\n"
-        "Use `/clear` to discard.",
-        parse_mode="Markdown",
-    )

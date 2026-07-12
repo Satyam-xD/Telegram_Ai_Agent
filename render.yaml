@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: telegram-ai-agent
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python mail_agent.py
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: AUTHORIZED_USER_ID
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: CLAUDE_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: EMAIL_USERNAME
+        sync: false
+      - key: EMAIL_PASSWORD
+        sync: false
+      - key: EMAIL_IMAP_SERVER
+        value: imap.gmail.com
+      - key: EMAIL_SMTP_SERVER
+        value: smtp.gmail.com
+      - key: EMAIL_SMTP_PORT
+        value: "465"
+      - key: POLL_INTERVAL_MINUTES
+        value: "5"
+      - key: WEBHOOK_URL
+        # Set this to your Render service URL after first deploy:
+        # e.g. https://telegram-ai-agent.onrender.com
+        sync: false

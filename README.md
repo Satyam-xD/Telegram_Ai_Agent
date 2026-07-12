@@ -1,84 +1,116 @@
 # 🤖 Telegram AI Email Agent
 
-A self-hosted, modular Telegram bot that turns your inbox into a fully AI-powered command centre. Get push alerts for new emails, reply with a single tap, send files as attachments, and chat with a context-aware AI assistant — all from Telegram.
+An autonomous AI agent that manages your inbox through natural Telegram conversation.
+No rigid commands needed — just talk to it. The AI decides what to do, chains multiple actions, and always asks before sending.
+
+Deployable on **Render** in minutes. Runs locally with zero config changes.
 
 ---
 
-## ✨ Feature Overview
+## ✨ Features
 
-| Feature | Description |
+| | Feature | Description |
+|---|---|---|
+| 🧠 | **Autonomous Agent** | Understands natural language — "check my emails and reply to anything from my boss" works out of the box |
+| 🔧 | **Tool Chaining** | AI chains multiple actions in one message — check → read → draft → confirm |
+| 📬 | **AI Summaries** | Bullet-point summaries of unread emails |
+| 🔔 | **Push Monitoring** | Background polling — new emails arrive as Telegram alerts automatically |
+| 🎛️ | **Inline Buttons** | One-tap **Reply / Skip** on every alert |
+| ✏️ | **Smart Drafting** | Full professional email from one sentence, always shown for confirmation |
+| 🔍 | **Inbox Search** | Search by keyword, subject, or `from:sender` |
+| ⭐ | **VIP Alerts** | Priority ⭐ flag for emails from key senders |
+| 📎 | **Attachments** | Send files to the bot → attaches to next email; email attachments forwarded to Telegram |
+| 🔁 | **AI Fallback** | Auto-failover: Gemini → Claude → OpenAI. All three support native function calling |
+
+---
+
+## 🧠 How the Agent Works
+
+```
+You: "Any urgent emails? If there's one from my boss, draft a reply saying I'll be there."
+
+Agent:
+  → calls check_inbox()          finds 3 unread
+  → calls search_emails("from:boss@...")  finds the one
+  → calls reply_to_email(id, "say I'll be there")
+  → shows draft in Telegram
+
+You: "send it"
+  → email sent ✅
+```
+
+The AI autonomously decides which of its **11 tools** to call, in what order, and how many times — all from a single natural language message.
+
+---
+
+## 🔧 Agent Tools
+
+| Tool | What it does |
 |---|---|
-| 📬 **AI Summaries** | Bullet-point summaries of unread emails via Gemini/Claude/OpenAI |
-| 🔔 **Auto-Polling** | Background inbox monitoring — push alerts without ever typing `/check` |
-| 🎛️ **Inline Buttons** | One-tap **Reply** / **Skip** on every email alert |
-| ✏️ **AI Draft** | Generate a full professional email from a one-line topic |
-| 🔍 **Inbox Search** | Search by keyword, subject, or sender |
-| ⭐ **VIP Alerts** | Priority ⭐ flag + instant notification for emails from key senders |
-| 📎 **Inbound Attachments** | Email PDFs, images, and docs forwarded directly to your Telegram |
-| 📎 **Outbound Attachments** | Send any file/photo to the bot — it attaches to the next email you send |
-| 🧠 **Conversation Memory** | Rolling 8-exchange context window for natural multi-turn AI chat |
-| 🔁 **AI Fallback Chain** | Automatic failover across Gemini → Claude → OpenAI on quota/rate-limit errors |
+| `check_inbox` | Fetch & summarise latest unread emails |
+| `read_email` | Read a specific email by ID |
+| `search_emails` | Search by keyword or `from:sender` |
+| `draft_email` | Compose draft → preview → wait for "send" |
+| `send_email` | Send (only after user confirms a draft) |
+| `reply_to_email` | AI-write a reply → preview → wait for "send" |
+| `start_monitoring` | Enable push notifications for new emails |
+| `stop_monitoring` | Disable push notifications |
+| `add_vip` | Add a sender to VIP list (starred alerts) |
+| `remove_vip` | Remove from VIP list |
+| `list_vip` | Show all VIP senders |
 
 ---
 
-## 🧠 AI Provider Fallback Chain
+## 🔁 AI Provider Chain
 
 ```
-Gemini 2.5 Flash
-  └→ Gemini 2.0 Flash
-       └→ Gemini 2.5 Flash Lite
-            └→ Gemini Flash Latest
-                 └→ Claude 3 Haiku       (optional — requires CLAUDE_API_KEY)
-                      └→ OpenAI GPT-4o-mini  (optional — requires OPENAI_API_KEY)
+Gemini 2.5 Flash  (primary — required)
+  └→ Claude 3 Haiku       (fallback #1 — optional)
+       └→ OpenAI GPT-4o-mini  (fallback #2 — optional)
 ```
 
-Only **Gemini is required**. Claude and OpenAI activate automatically when their keys are present.
+All three use **native function/tool calling** — no prompt hacks. If one fails or hits a quota limit, the next takes over automatically.
 
 ---
 
 ## 🗂️ Project Structure
 
 ```
-Telegram_Ai_Agent/
-├── mail_agent.py          ← Entry point — registers handlers & starts the bot
-├── config.py              ← Environment variables & AI client initialisation
-├── ai_engine.py           ← Multi-provider generation with automatic fallback
-├── email_utils.py         ← IMAP/SMTP helpers, email parser, message builder
-├── keyboards.py           ← Inline keyboard factory & button callback handler
+├── mail_agent.py        Entry point — registers handlers & starts the bot
+├── agent.py             Autonomous AI agent — tools, runners, provider loop
+├── config.py            Environment variables & AI client initialisation
+├── ai_engine.py         Simple text generation with Gemini → Claude → OpenAI fallback
+├── email_utils.py       Pure IMAP/SMTP helpers (no Telegram/AI imports)
+├── keyboards.py         Inline keyboard factory & button callback
+├── utils.py             Shared helpers — auth check, show_draft, send_draft
 ├── requirements.txt
+├── Procfile             Render start command
+├── render.yaml          Render service config
 ├── .env.example
 └── handlers/
-    ├── commands.py        ← /start /check /send /reply /draft /search
-    ├── monitoring.py      ← /watch /unwatch /vip + background poll job
-    ├── files.py           ← File/media upload, /clear, attachment forwarding
-    └── chat.py            ← AI chat with memory, draft flow & reply flow
+    ├── commands.py      /start /check /send /reply /draft /search
+    ├── monitoring.py    /watch /unwatch /vip + background poll job
+    ├── files.py         File/media upload, /clear, attachment forwarding
+    └── chat.py          Thin router — draft flow, reply flow, agent dispatch
 ```
 
-Each module has a single responsibility — `email_utils.py` has zero Telegram/AI imports, `ai_engine.py` exposes one function (`generate`), and `mail_agent.py` contains only handler registration.
+**Design principles:**
+- `email_utils.py` — zero Telegram/AI imports (pure, unit-testable)
+- `agent.py` — zero Telegram handler boilerplate (pure AI logic)
+- `chat.py` — zero business logic (routes only)
+- `utils.py` — single source of truth for `is_authorized`, draft lifecycle
 
 ---
 
-## 🛠️ Requirements
+## 🚀 Quick Start (Local)
 
-- **Python 3.10+**
-- `python-telegram-bot[job-queue]` — Telegram Bot API + background jobs
-- `google-generativeai` — Gemini (primary AI)
-- `anthropic` — Claude (fallback AI, optional)
-- `openai` — OpenAI GPT (fallback AI, optional)
-- `imapclient` — IMAP inbox access
-- `python-dotenv` — `.env` file loading
-
----
-
-## 🚀 Getting Started
-
-### 1. Clone the Repository
+### 1. Clone
 ```bash
 git clone https://github.com/Satyam-xD/Telegram_Ai_Agent.git
 cd Telegram_Ai_Agent
 ```
 
-### 2. Create a Virtual Environment
+### 2. Virtual environment
 ```bash
 python -m venv .venv
 
@@ -89,109 +121,123 @@ python -m venv .venv
 source .venv/bin/activate
 ```
 
-### 3. Install Dependencies
+### 3. Install dependencies
 ```bash
 pip install -r requirements.txt
 ```
 
-### 4. Configure Environment Variables
+### 4. Configure `.env`
 ```bash
 cp .env.example .env
 ```
 
-Open `.env` and fill in your credentials:
+Fill in your credentials:
 
 ```env
-# ── Telegram ──────────────────────────────────────────────────────────────────
 TELEGRAM_BOT_TOKEN=your_bot_token        # from @BotFather
-AUTHORIZED_USER_ID=your_user_id         # from @userinfobot
+AUTHORIZED_USER_ID=your_user_id          # from @userinfobot
 
-# ── AI Providers (only Gemini is required) ────────────────────────────────────
-GEMINI_API_KEY=your_gemini_key
+GEMINI_API_KEY=your_gemini_key           # required
 CLAUDE_API_KEY=your_claude_key           # optional
 OPENAI_API_KEY=your_openai_key           # optional
 
-# ── Email (Gmail example) ─────────────────────────────────────────────────────
 EMAIL_USERNAME=your@gmail.com
-EMAIL_PASSWORD=your_app_password         # use an App Password, not your main password
+EMAIL_PASSWORD=your_app_password         # Gmail: use an App Password
 EMAIL_IMAP_SERVER=imap.gmail.com
 EMAIL_SMTP_SERVER=smtp.gmail.com
 EMAIL_SMTP_PORT=465
 
-# ── Auto-polling ──────────────────────────────────────────────────────────────
 POLL_INTERVAL_MINUTES=5
+# WEBHOOK_URL=                           # leave blank for local polling
 ```
 
-> ⚠️ **Gmail users**: Enable 2-Step Verification and create an [App Password](https://myaccount.google.com/apppasswords) — the bot cannot use your main account password.
+> ⚠️ **Gmail users**: Enable 2-Step Verification and generate an [App Password](https://myaccount.google.com/apppasswords). The bot cannot use your main account password.
 
-### 5. Run the Bot
+### 5. Run
 ```bash
 python mail_agent.py
 ```
 
 ---
 
-## 🤖 Command Reference
+## ☁️ Deploy on Render
 
-### 📩 Email Commands
+The bot auto-switches between **polling** (local) and **webhook** (Render) based on the `WEBHOOK_URL` env var — no code changes needed.
+
+### Steps
+
+1. **Push to GitHub**
+
+2. **Create a new Web Service on Render**
+   - Connect your GitHub repo
+   - Render detects `render.yaml` automatically
+   - Build command: `pip install -r requirements.txt`
+   - Start command: `python mail_agent.py`
+
+3. **Add environment variables** in the Render dashboard (all the same as `.env` above)
+
+4. **After first deploy**, copy your Render URL (e.g. `https://telegram-ai-agent.onrender.com`)
+
+5. **Set `WEBHOOK_URL`** to that URL in Render's environment variables
+
+6. **Redeploy** — the bot switches to webhook mode automatically
+
+> 💡 Render injects `PORT` automatically. Do not set it manually.
+
+---
+
+## 💬 Usage
+
+### Natural language (recommended)
+
+Just talk to the bot — no commands needed:
+
+```
+"Any new emails?"
+"Check my inbox and summarise what's important"
+"Send an email to alice@co.com about the budget meeting tomorrow"
+"Reply to email 512 and say I'll attend"
+"Start watching my inbox"
+"Add boss@co.com to VIP"
+"Search for emails from Amazon"
+```
+
+When the agent drafts an email, it always previews it first:
+- Reply **`send`** (or "yes", "go ahead", "ok") → sends
+- Reply **`cancel`** (or "no", "discard") → discards
+
+### Commands (shortcuts)
+
+Commands still work for quick, explicit actions:
 
 | Command | Example | Description |
 |---|---|---|
-| `/start` | `/start` | Welcome message and full command guide, shows active AI providers |
-| `/check` | `/check` | Fetch & AI-summarize your latest 5 unread emails with inline Reply buttons |
-| `/send` | `/send bob@co.com Invoice \| Please find it attached.` | Send a new email (separate subject and body with `\|`) |
-| `/reply` | `/reply 451 decline politely and suggest next week` | AI-draft a reply to an email by its ID and send it |
-| `/draft` | `/draft boss@co.com request 3 days annual leave` | Generate a complete email from a short topic — confirm with *send* |
-| `/search` | `/search invoice` or `/search from:hr@co.com` | Search inbox by keyword or by sender using `from:` prefix |
+| `/start` | `/start` | Welcome message + active AI providers |
+| `/check` | `/check` | Latest 5 unread emails with inline Reply buttons |
+| `/send` | `/send bob@co.com Invoice \| Please find it attached.` | Send immediately (subject and body separated by `\|`) |
+| `/send` | `/send` (no args) | Send pending draft (same as saying "send") |
+| `/reply` | `/reply 451 decline politely` | AI-draft a reply to email ID 451 |
+| `/draft` | `/draft boss@co.com request 3 days leave` | Generate email from a topic |
+| `/search` | `/search invoice` or `/search from:hr@co.com` | Search inbox |
+| `/watch` | `/watch` | Start push notifications |
+| `/unwatch` | `/unwatch` | Stop monitoring |
+| `/vip add` | `/vip add ceo@co.com` | Add VIP sender |
+| `/vip remove` | `/vip remove ceo@co.com` | Remove VIP sender |
+| `/vip list` | `/vip list` | List VIP senders |
+| `/clear` | `/clear` | Discard pending file attachment |
 
-### 🔔 Auto-Monitoring
+### Attachments
 
-| Command | Description |
-|---|---|
-| `/watch` | Start background inbox polling — new emails arrive as Telegram alerts automatically |
-| `/unwatch` | Stop background monitoring |
-
-Each auto-alert includes an AI summary and inline **Reply / Skip** buttons. Email attachments are forwarded automatically.
-
-### ⭐ VIP Alerts
-
-| Command | Description |
-|---|---|
-| `/vip add email@example.com` | Add a VIP sender — emails from them are flagged ⭐ |
-| `/vip remove email@example.com` | Remove a VIP sender |
-| `/vip list` | Show all currently configured VIP senders |
-
-### 📎 Files & Media
-
-| Action | Description |
-|---|---|
-| *Send any file or photo to the bot* | Saved as a pending attachment for the next `/send`, `/reply`, or `/draft` |
-| `/clear` | Discard the currently pending attachment |
-
-Supported inbound types: documents, photos, videos, audio, voice messages.  
-Supported outbound (from emails): PDFs, images, Word/Excel/Zip — anything with a `Content-Disposition: attachment` header is forwarded to Telegram automatically.
-
-### 💬 AI Chat Assistant
-
-Send any plain text (no `/` prefix) to talk to the AI. The bot maintains a rolling 8-exchange memory window, so you can have natural multi-turn conversations:
-
-```
-You:  summarize the last email from John
-Bot:  [summary]
-You:  now draft a reply declining the meeting
-Bot:  [draft]
-You:  make it shorter and more casual
-Bot:  [revised draft]
-```
-
-After `/draft`, reply with:
-- **`send`** — confirm and send the email
-- **`cancel`** — discard the draft
+Send any file or photo to the bot — it's saved as a pending attachment.
+The next email you send (via command or chat) will include it automatically.
 
 ---
 
 ## 🔒 Security
 
-All commands are restricted to the single `AUTHORIZED_USER_ID` configured in your `.env`. Any request from a different Telegram user is silently rejected. Get your Telegram user ID from [@userinfobot](https://t.me/userinfobot).
+- All messages from non-authorized users are **silently ignored** — no error, no acknowledgement
+- The single `AUTHORIZED_USER_ID` is the only Telegram user that can interact with the bot
+- `.env` is excluded from git via `.gitignore`
+- The bot token is used as the webhook URL path (secret endpoint)
 
-Your `.env` file (containing all credentials) is excluded from version control via `.gitignore`.
+Get your Telegram user ID from [@userinfobot](https://t.me/userinfobot).

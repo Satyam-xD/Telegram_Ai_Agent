@@ -1,7 +1,10 @@
 """
 mail_agent.py — Entry point.
 
-Registers all handlers and starts the bot. No business logic lives here.
+Run modes (auto-detected from environment):
+  • Webhook mode  — set WEBHOOK_URL=https://<your-render-service>.onrender.com
+                    Render injects PORT automatically.
+  • Polling mode  — leave WEBHOOK_URL unset (default, great for local dev).
 """
 import logging
 
@@ -13,7 +16,7 @@ from telegram.ext import (
     filters,
 )
 
-from config import BOT_TOKEN
+from config import BOT_TOKEN, WEBHOOK_PORT, WEBHOOK_URL
 from handlers.chat import chat_with_ai
 from handlers.commands import (
     check_emails,
@@ -38,10 +41,10 @@ _FILE_FILTER = (
 )
 
 
-def main() -> None:
+def _build_app() -> Application:
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # ── Email commands ────────────────────────────────────────────────────────
+    # ── Commands (explicit shortcuts) ─────────────────────────────────────────
     app.add_handler(CommandHandler("start",   start))
     app.add_handler(CommandHandler("check",   check_emails))
     app.add_handler(CommandHandler("send",    send_email))
@@ -61,15 +64,36 @@ def main() -> None:
     # ── Inline keyboard callbacks ─────────────────────────────────────────────
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    # ── AI chat (must be last) ────────────────────────────────────────────────
+    # ── Autonomous AI agent (catches all free text — must be last) ────────────
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat_with_ai))
 
-    logger.info("Bot starting — Gemini → Claude → OpenAI fallback chain active.")
-    app.run_polling()
+    return app
+
+
+def main() -> None:
+    app = _build_app()
+
+    if WEBHOOK_URL:
+        # ── Webhook mode (Render / any public HTTPS host) ─────────────────────
+        webhook_path = BOT_TOKEN          # use token as secret URL path
+        logger.info(
+            "Starting in WEBHOOK mode — %s/%s  (port %s)",
+            WEBHOOK_URL, webhook_path, WEBHOOK_PORT,
+        )
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=WEBHOOK_PORT,
+            url_path=webhook_path,
+            webhook_url=f"{WEBHOOK_URL}/{webhook_path}",
+        )
+    else:
+        # ── Polling mode (local development) ──────────────────────────────────
+        logger.info("Starting in POLLING mode (local dev).")
+        app.run_polling()
 
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        logger.info("Bot stopped gracefully.")
+        logger.info("Bot stopped.")

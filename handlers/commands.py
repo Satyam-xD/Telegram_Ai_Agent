@@ -1,5 +1,8 @@
 """
-handlers/commands.py — Core email command handlers.
+handlers/commands.py — Explicit email command handlers.
+
+These are shortcuts — the autonomous agent handles the same actions from
+free text. Commands give power-users precise, fast control.
 
 Commands: /start, /check, /send, /reply, /draft, /search
 """
@@ -8,16 +11,11 @@ import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 
+import agent
 import ai_engine
-from config import (
-    AUTHORIZED_USER_ID,
-    EMAIL_USERNAME,
-    claude_client,
-    openai_client,
-)
+from config import claude_client, openai_client
 from email_utils import (
     build_message,
-    cleanup_file,
     fetch_msg,
     get_attachments,
     get_body,
@@ -26,12 +24,9 @@ from email_utils import (
 )
 from handlers.files import forward_email_attachments
 from keyboards import email_keyboard
+from utils import clear_pending, is_authorized, send_draft, show_draft
 
 logger = logging.getLogger(__name__)
-
-
-def is_authorized(update: Update) -> bool:
-    return str(update.effective_user.id) == AUTHORIZED_USER_ID
 
 
 # ── /start ────────────────────────────────────────────────────────────────────
@@ -51,11 +46,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "👋 *Welcome to your AI Email Agent!*\n\n"
         f"🧠 *AI:* {' → '.join(providers)}\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "📩 *Email*\n"
-        "📥 `/check` — Summarize latest 5 unread emails\n"
-        "✍️ `/reply [id] [instructions]` — AI-draft & send a reply\n"
+        "💬 *Just chat naturally!*\n"
+        "\"Any new emails?\" · \"Mail John about the meeting\" · \"Search for invoices\"\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "⌨️ *Quick commands*\n"
+        "📥 `/check` — Summarize latest unread emails\n"
+        "✍️ `/reply [id] [instructions]` — AI-draft a reply\n"
         "📧 `/send [to] [subject] | [body]` — Send a new email\n"
-        "✏️ `/draft [to] [topic]` — Full email from a one-liner\n"
+        "✏️ `/draft [to] [topic]` — Draft from a one-liner\n"
         "🔍 `/search [keyword]` — Search inbox\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "🔔 *Monitoring*\n"
@@ -65,12 +63,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "⭐ *VIP Alerts*\n"
         "`/vip add email` · `/vip remove email` · `/vip list`\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "📎 *Files & Media*\n"
-        "Send any file/photo to attach it to your next email\n"
-        "🗑️ `/clear` — Discard pending attachment\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "🤖 *Chat Assistant*\n"
-        "Send any text to chat with the AI",
+        "📎 *Attachments*\n"
+        "Send any file/photo · `/clear` to discard",
         parse_mode="Markdown",
     )
 
@@ -82,8 +76,7 @@ async def check_emails(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text("Unauthorized access.")
         return
 
-    await update.message.reply_text("Checking your inbox... 🔍")
-
+    await update.message.reply_text("📥 Checking your inbox…")
     try:
         with imap_connect() as client:
             all_unseen = client.search(["UNSEEN"])
@@ -91,45 +84,38 @@ async def check_emails(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 await update.message.reply_text("No new unread emails! 🎉")
                 return
 
-            latest = all_unseen[-5:]
-            emails_data   = []
-            msg_cache     = {}
+            latest    = all_unseen[-5:]
+            emails    = []
+            msg_cache = {}
 
-            for msg_id in reversed(latest):
-                msg  = fetch_msg(client, msg_id)
-                body = get_body(msg)
-                emails_data.append({
-                    "id":         msg_id,
+            for mid in reversed(latest):
+                msg = fetch_msg(client, mid)
+                emails.append({
+                    "id":         mid,
                     "from":       msg.get("From", "(Unknown)"),
                     "subject":    msg.get("Subject", "(No Subject)"),
-                    "body":       body[:1500],
+                    "body":       get_body(msg)[:1500],
                     "has_attach": bool(get_attachments(msg)),
                 })
-                msg_cache[msg_id] = msg
+                msg_cache[mid] = msg
 
-        # Combined AI summary
         prompt = (
-            "You are an expert AI Email Assistant. Summarize each email below.\n"
-            "Format each as:\n"
+            "Summarize each email below as:\n"
             "📬 Msg ID: [ID]\nFrom: [Sender]\nSubject: [Subject]\n"
             "Summary:\n- [2-3 bullet points]\n──────────────────────────────\n\n"
         )
-        for e in emails_data:
-            prompt += (
-                f"Msg ID: {e['id']}\nFrom: {e['from']}\n"
-                f"Subject: {e['subject']}\nBody:\n{e['body']}\n\n──────────\n\n"
-            )
+        for e in emails:
+            prompt += f"Msg ID: {e['id']}\nFrom: {e['from']}\nSubject: {e['subject']}\nBody:\n{e['body']}\n\n──────────\n\n"
 
         summary = ai_engine.generate(prompt)
         await update.message.reply_text(
-            f"Found *{len(all_unseen)}* unread email(s). Latest {len(latest)}:\n\n{summary}",
+            f"Found *{len(all_unseen)}* unread. Latest {len(latest)}:\n\n{summary}",
             parse_mode="Markdown",
         )
-
-        for e in emails_data:
-            att_tag = " 📎" if e["has_attach"] else ""
+        for e in emails:
+            att = " 📎" if e["has_attach"] else ""
             await update.message.reply_text(
-                f"📬 *ID: {e['id']}*{att_tag}\n*From:* {e['from']}\n*Subject:* {e['subject']}",
+                f"📬 *ID: {e['id']}*{att}\n*From:* {e['from']}\n*Subject:* {e['subject']}",
                 parse_mode="Markdown",
                 reply_markup=email_keyboard(e["id"]),
             )
@@ -137,8 +123,8 @@ async def check_emails(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 await forward_email_attachments(context, update.effective_chat.id, msg_cache[e["id"]])
 
     except Exception as exc:
-        logger.error("check_emails error: %s", exc)
-        await update.message.reply_text(f"Failed to check emails: {exc}")
+        logger.error("check_emails: %s", exc)
+        await update.message.reply_text(f"❌ Failed to check inbox: {exc}")
 
 
 # ── /send ─────────────────────────────────────────────────────────────────────
@@ -148,37 +134,49 @@ async def send_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text("Unauthorized access.")
         return
 
-    args = context.args
-    if not args or len(args) < 3:
+    args = context.args or []
+
+    # /send with no args → send pending draft
+    if not args:
+        draft = context.user_data.get("draft")
+        if draft:
+            await send_draft(update, context, draft)
+        else:
+            await update.message.reply_text(
+                "📭 No pending draft.\n\n"
+                "Use `/send to subject | body` or just tell me:\n"
+                "_\"Send an email to alice@example.com about the project\"_",
+                parse_mode="Markdown",
+            )
+        return
+
+    if len(args) < 2:
         await update.message.reply_text(
-            "❌ *Invalid usage.*\n"
-            "Format: `/send [to] [subject] | [body]`\n"
-            "Example: `/send friend@example.com Lunch Plans | Hey! Are we meeting today?`",
+            "❌ *Usage:* `/send [to] [subject] | [body]`",
             parse_mode="Markdown",
         )
         return
 
     try:
-        full = " ".join(args)
-        to   = args[0]
-        rest = full[len(to):].strip()
-        subject, body = (rest.split("|", 1) if "|" in rest else ("Quick Mail from Bot", rest))
-        subject, body = subject.strip(), body.strip()
+        full            = " ".join(args)
+        to              = args[0]
+        rest            = full[len(to):].strip()
+        subject, body   = (rest.split("|", 1) if "|" in rest else ("Quick Mail", rest))
+        subject, body   = subject.strip(), body.strip()
+        pending         = context.user_data.get("pending_attachment")
+        msg             = build_message(to, subject, body, attachment=pending)
 
-        pending = context.user_data.get("pending_attachment")
-        msg     = build_message(to, subject, body, attachment=pending)
+        await update.message.reply_text("📤 Sending…")
+        with smtp_connect() as srv:
+            srv.send_message(msg)
 
-        await update.message.reply_text("Sending email... 📤")
-        with smtp_connect() as server:
-            server.send_message(msg)
-
-        _clear_pending(context, pending)
-        suffix = " with attachment" if pending else ""
-        await update.message.reply_text(f"✅ Email{suffix} sent to {to}!")
-
+        clear_pending(context, pending)
+        await update.message.reply_text(
+            f"✅ Email{'  📎' if pending else ''} sent to {to}!"
+        )
     except Exception as exc:
-        logger.error("send_email error: %s", exc)
-        await update.message.reply_text(f"Failed to send email: {exc}")
+        logger.error("send_email: %s", exc)
+        await update.message.reply_text(f"❌ Failed: {exc}")
 
 
 # ── /reply ────────────────────────────────────────────────────────────────────
@@ -191,9 +189,7 @@ async def reply_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     args = context.args
     if not args or len(args) < 2:
         await update.message.reply_text(
-            "❌ *Invalid usage.*\n"
-            "Format: `/reply [msg_id] [instructions]`\n"
-            "Example: `/reply 688 say I will attend the meeting tomorrow`",
+            "❌ *Usage:* `/reply [msg_id] [instructions]`",
             parse_mode="Markdown",
         )
         return
@@ -201,11 +197,11 @@ async def reply_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     try:
         msg_id = int(args[0])
     except ValueError:
-        await update.message.reply_text("❌ Invalid Message ID — must be a number.")
+        await update.message.reply_text("❌ Message ID must be a number.")
         return
 
     instruction = " ".join(args[1:])
-    await update.message.reply_text(f"Fetching email {msg_id}... 🔍")
+    await update.message.reply_text(f"🔍 Fetching email {msg_id}…")
 
     try:
         with imap_connect() as client:
@@ -214,43 +210,30 @@ async def reply_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await update.message.reply_text(f"❌ Email {msg_id} not found.")
             return
 
-        orig_subject  = orig.get("Subject", "(No Subject)")
-        orig_from     = orig.get("From", "(Unknown)")
-        orig_body     = get_body(orig)
-        reply_to      = orig.get("Reply-To") or orig_from
-        orig_msg_id   = orig.get("Message-ID", "")
+        orig_subject = orig.get("Subject", "(No Subject)")
+        orig_from    = orig.get("From", "(Unknown)")
+        reply_to     = orig.get("Reply-To") or orig_from
+        orig_msg_id  = orig.get("Message-ID", "")
 
-        await update.message.reply_text("Drafting reply with AI... 🤖")
-
+        await update.message.reply_text("✍️ Drafting reply with AI…")
         reply_body = ai_engine.generate(
             f"Write a professional email reply.\n\n"
             f"Instructions: {instruction}\n\n"
-            f"Original — From: {orig_from}\nSubject: {orig_subject}\nBody:\n{orig_body[:1500]}\n\n"
+            f"Original — From: {orig_from}\nSubject: {orig_subject}\n"
+            f"Body:\n{get_body(orig)[:1500]}\n\n"
             f"Write ONLY the email body. No subject line or placeholders."
         )
 
         subject = orig_subject if orig_subject.lower().startswith("re:") else f"Re: {orig_subject}"
-        pending = context.user_data.get("pending_attachment")
-        msg     = build_message(
-            reply_to, subject, reply_body,
-            attachment=pending,
+        await show_draft(
+            update, context, reply_to, subject, reply_body,
             in_reply_to=orig_msg_id,
             references=orig.get("References", ""),
         )
 
-        await update.message.reply_text("Sending reply... 📤")
-        with smtp_connect() as server:
-            server.send_message(msg)
-
-        _clear_pending(context, pending)
-        await update.message.reply_text(
-            f"✅ *Reply sent to {reply_to}!*\n\n📝 *Draft:*\n{reply_body}",
-            parse_mode="Markdown",
-        )
-
     except Exception as exc:
-        logger.error("reply_email error: %s", exc)
-        await update.message.reply_text(f"❌ Failed to send reply: {exc}")
+        logger.error("reply_email: %s", exc)
+        await update.message.reply_text(f"❌ Failed: {exc}")
 
 
 # ── /draft ────────────────────────────────────────────────────────────────────
@@ -263,37 +246,24 @@ async def draft_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     args = context.args
     if not args or len(args) < 2:
         await update.message.reply_text(
-            "❌ *Invalid usage.*\n"
-            "Format: `/draft [to] [topic]`\n"
-            "Example: `/draft boss@company.com request 3 days leave next week`",
+            "❌ *Usage:* `/draft [to] [topic]`",
             parse_mode="Markdown",
         )
         return
 
     to    = args[0]
     topic = " ".join(args[1:])
-    await update.message.reply_text("✏️ Drafting email with AI...")
+    await update.message.reply_text("✏️ Drafting with AI…")
 
     try:
-        raw_draft = ai_engine.generate(
+        raw = ai_engine.generate(
             f"Draft a complete, professional email.\n"
             f"Recipient: {to}\nTopic: {topic}\n\n"
             f"Format EXACTLY as:\nSUBJECT: [subject line]\n\n[email body]\n\n"
             f"No extra commentary."
         )
-
-        subject, body = _parse_draft(raw_draft)
-        context.user_data["draft"] = {"to": to, "subject": subject, "body": body}
-
-        pending     = context.user_data.get("pending_attachment")
-        attach_note = f"\n\n📎 *Attachment:* `{pending['filename']}`" if pending else ""
-
-        await update.message.reply_text(
-            f"📝 *Draft Ready!*\n\n*To:* {to}\n*Subject:* {subject}\n\n{body}"
-            f"{attach_note}\n\n──────────────────────────\n"
-            "Reply *send* to send · *cancel* to discard",
-            parse_mode="Markdown",
-        )
+        subject, body = _parse_subject_body(raw)
+        await show_draft(update, context, to, subject, body)
 
     except Exception as exc:
         await update.message.reply_text(f"❌ Failed to generate draft: {exc}")
@@ -309,14 +279,13 @@ async def search_emails(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     args = context.args
     if not args:
         await update.message.reply_text(
-            "❌ *Invalid usage.*\n"
-            "Format: `/search [keyword]` or `/search from:[sender]`",
+            "❌ *Usage:* `/search [keyword]` or `/search from:[sender]`",
             parse_mode="Markdown",
         )
         return
 
     query = " ".join(args)
-    await update.message.reply_text(f"🔍 Searching: `{query}`...", parse_mode="Markdown")
+    await update.message.reply_text(f"🔍 Searching: `{query}`…", parse_mode="Markdown")
 
     try:
         with imap_connect() as client:
@@ -325,49 +294,41 @@ async def search_emails(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 if query.lower().startswith("from:")
                 else ["TEXT", query]
             )
-            messages = client.search(criteria)
+            ids = client.search(criteria)
 
-            if not messages:
-                await update.message.reply_text(f"No emails found for: `{query}`", parse_mode="Markdown")
-                return
+        if not ids:
+            await update.message.reply_text(f"No emails found for: `{query}`", parse_mode="Markdown")
+            return
 
-            latest = messages[-5:]
-            await update.message.reply_text(
-                f"🔍 *{len(messages)}* result(s). Showing latest {len(latest)}:",
-                parse_mode="Markdown",
-            )
-
-            for msg_id in reversed(latest):
-                msg     = fetch_msg(client, msg_id)
-                att_tag = " 📎" if get_attachments(msg) else ""
+        latest = ids[-5:]
+        await update.message.reply_text(
+            f"🔍 *{len(ids)}* result(s). Latest {len(latest)}:",
+            parse_mode="Markdown",
+        )
+        with imap_connect() as client:
+            for mid in reversed(latest):
+                msg = fetch_msg(client, mid)
+                att = " 📎" if get_attachments(msg) else ""
                 await update.message.reply_text(
-                    f"📬 *ID: {msg_id}*{att_tag}\n"
-                    f"*From:* {msg.get('From', '(Unknown)')}\n"
-                    f"*Subject:* {msg.get('Subject', '(No Subject)')}",
+                    f"📬 *ID: {mid}*{att}\n"
+                    f"*From:* {msg.get('From', '?')}\n"
+                    f"*Subject:* {msg.get('Subject', '?')}",
                     parse_mode="Markdown",
-                    reply_markup=email_keyboard(msg_id),
+                    reply_markup=email_keyboard(mid),
                 )
 
     except Exception as exc:
-        logger.error("search_emails error: %s", exc)
+        logger.error("search_emails: %s", exc)
         await update.message.reply_text(f"❌ Search failed: {exc}")
 
 
 # ── Private helpers ───────────────────────────────────────────────────────────
 
-def _parse_draft(raw: str) -> tuple[str, str]:
-    """Extract subject and body from a SUBJECT: ... \n\n ... formatted draft."""
-    subject = "Draft Email"
-    body    = raw
-    if "SUBJECT:" in raw:
-        lines   = raw.split("\n", 2)
-        subject = lines[0].replace("SUBJECT:", "").strip()
-        body    = "\n".join(lines[2:]).strip() if len(lines) > 2 else raw
+def _parse_subject_body(raw: str) -> tuple[str, str]:
+    """Extract (subject, body) from 'SUBJECT: ...\n\n...' formatted AI output."""
+    if "SUBJECT:" not in raw:
+        return "Draft Email", raw
+    lines   = raw.split("\n", 2)
+    subject = lines[0].replace("SUBJECT:", "").strip()
+    body    = "\n".join(lines[2:]).strip() if len(lines) > 2 else raw
     return subject, body
-
-
-def _clear_pending(context: ContextTypes.DEFAULT_TYPE, pending: dict | None) -> None:
-    """Delete temp file and remove pending_attachment from user_data."""
-    if pending:
-        cleanup_file(pending["path"])
-        context.user_data.pop("pending_attachment", None)
