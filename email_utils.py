@@ -80,11 +80,43 @@ def get_attachments(msg) -> list[tuple[str, str, bytes]]:
 # ── IMAP helpers ──────────────────────────────────────────────────────────────
 
 def imap_connect() -> IMAPClient:
-    """Return an authenticated IMAPClient (caller must use as context manager)."""
-    client = IMAPClient(EMAIL_IMAP, ssl=True, timeout=15)
-    client.login(EMAIL_USERNAME, EMAIL_PASSWORD)
-    client.select_folder("INBOX")
-    return client
+    """
+    Return an authenticated IMAPClient (caller must use as context manager).
+
+    Tries in order:
+      1. SSL on port 993
+      2. STARTTLS on port 143  (fallback when 993 is blocked)
+
+    Raises a descriptive RuntimeError if both fail.
+    """
+    attempts = [
+        (True,  993, "IMAP SSL:993"),
+        (False, 143, "IMAP STARTTLS:143"),
+    ]
+    last_error: Exception | None = None
+    for use_ssl, port, label in attempts:
+        try:
+            client = IMAPClient(EMAIL_IMAP, port=port, ssl=use_ssl, timeout=15)
+            if not use_ssl:
+                client.starttls()
+            client.login(EMAIL_USERNAME, EMAIL_PASSWORD)
+            client.select_folder("INBOX")
+            return client
+        except OSError as exc:
+            last_error = exc
+            continue
+        except Exception as exc:
+            last_error = exc
+            continue
+
+    raise RuntimeError(
+        f"Cannot reach IMAP server '{EMAIL_IMAP}'. "
+        f"Tried {' and '.join(a[2] for a in attempts)}. "
+        "Possible causes:\n"
+        "  • Your network blocks outbound IMAP (ports 993/143)\n"
+        "  • EMAIL_IMAP_SERVER is wrong in your .env\n"
+        f"Last error: {last_error}"
+    )
 
 
 def fetch_msg(client: IMAPClient, msg_id: int):
@@ -97,11 +129,60 @@ def fetch_msg(client: IMAPClient, msg_id: int):
 
 # ── SMTP helpers ──────────────────────────────────────────────────────────────
 
-def smtp_connect() -> smtplib.SMTP_SSL:
-    """Return an authenticated SMTP_SSL connection."""
-    server = smtplib.SMTP_SSL(EMAIL_SMTP, EMAIL_SMTP_PORT, timeout=15)
-    server.login(EMAIL_USERNAME, EMAIL_PASSWORD)
-    return server
+def smtp_connect() -> smtplib.SMTP:
+    """
+    Return an authenticated SMTP connection.
+
+    Tries in order:
+      1. SMTP_SSL on EMAIL_SMTP_PORT (default 465)
+      2. SMTP + STARTTLS on port 587  (fallback when 465 is blocked)
+
+    Raises a descriptive RuntimeError if both fail.
+    """
+    attempts = [
+        # (method, port, label)
+        ("ssl",      EMAIL_SMTP_PORT, f"SMTP_SSL:{EMAIL_SMTP_PORT}"),
+        ("starttls", 587,             "SMTP+STARTTLS:587"),
+    ]
+    # Avoid duplicate if user already set port 587
+    if EMAIL_SMTP_PORT == 587:
+        attempts = [("starttls", 587, "SMTP+STARTTLS:587")]
+
+    last_error: Exception | None = None
+    for method, port, label in attempts:
+        try:
+            if method == "ssl":
+                srv = smtplib.SMTP_SSL(EMAIL_SMTP, port, timeout=15)
+            else:
+                srv = smtplib.SMTP(EMAIL_SMTP, port, timeout=15)
+                srv.ehlo()
+                srv.starttls()
+                srv.ehlo()
+            srv.login(EMAIL_USERNAME, EMAIL_PASSWORD)
+            return srv
+        except OSError as exc:
+            # Network-level errors (ENETUNREACH, ECONNREFUSED, timeout)
+            last_error = exc
+            continue
+        except smtplib.SMTPAuthenticationError as exc:
+            raise RuntimeError(
+                f"SMTP login failed on {label}. "
+                "Check EMAIL_USERNAME and EMAIL_PASSWORD in your .env. "
+                "Gmail users: make sure you\'re using an App Password, not your account password."
+            ) from exc
+        except smtplib.SMTPException as exc:
+            last_error = exc
+            continue
+
+    raise RuntimeError(
+        f"Cannot reach SMTP server '{EMAIL_SMTP}'. "
+        f"Tried ports {', '.join(str(a[1]) for a in attempts)}. "
+        "Possible causes:\n"
+        "  • Your network or ISP blocks outbound SMTP (common on mobile hotspots)\n"
+        "  • EMAIL_SMTP_SERVER is wrong in your .env\n"
+        "  • Firewall is blocking ports 465 and 587\n"
+        f"Last error: {last_error}"
+    )
 
 
 def build_message(
