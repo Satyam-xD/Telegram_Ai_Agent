@@ -31,3 +31,7 @@ services:
         # Set this to your Render service URL after first deploy:
         # e.g. https://telegram-ai-agent.onrender.com
         sync: false
+      - key: RESEND_API_KEY
+        # Sign up free at https://resend.com — bypasses Render's SMTP block
+        # Add your domain in Resend dashboard, then paste the API key here
+        sync: false

@@ -2,8 +2,13 @@
 email_utils.py — Pure helpers for parsing emails and building outgoing messages.
 
 No Telegram or AI dependencies — safe to unit-test in isolation.
+
+Send priority:
+  1. Resend API (HTTPS, works everywhere including Render free tier)
+  2. SMTP SSL / STARTTLS fallback (for local dev without Resend key)
 """
 import email
+import logging
 import os
 import re
 import smtplib
@@ -19,7 +24,10 @@ from config import (
     EMAIL_SMTP,
     EMAIL_SMTP_PORT,
     EMAIL_USERNAME,
+    RESEND_API_KEY,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ── HTML / body parsing ───────────────────────────────────────────────────────
@@ -127,7 +135,7 @@ def fetch_msg(client: IMAPClient, msg_id: int):
     return email.message_from_bytes(raw[msg_id][b"RFC822"], policy=default)
 
 
-# ── SMTP helpers ──────────────────────────────────────────────────────────────
+# ── SMTP helpers (local-dev fallback) ──────────────────────────────────────────────
 
 def smtp_connect() -> smtplib.SMTP:
     """
@@ -140,11 +148,9 @@ def smtp_connect() -> smtplib.SMTP:
     Raises a descriptive RuntimeError if both fail.
     """
     attempts = [
-        # (method, port, label)
         ("ssl",      EMAIL_SMTP_PORT, f"SMTP_SSL:{EMAIL_SMTP_PORT}"),
         ("starttls", 587,             "SMTP+STARTTLS:587"),
     ]
-    # Avoid duplicate if user already set port 587
     if EMAIL_SMTP_PORT == 587:
         attempts = [("starttls", 587, "SMTP+STARTTLS:587")]
 
@@ -161,28 +167,90 @@ def smtp_connect() -> smtplib.SMTP:
             srv.login(EMAIL_USERNAME, EMAIL_PASSWORD)
             return srv
         except OSError as exc:
-            # Network-level errors (ENETUNREACH, ECONNREFUSED, timeout)
             last_error = exc
             continue
         except smtplib.SMTPAuthenticationError as exc:
             raise RuntimeError(
                 f"SMTP login failed on {label}. "
-                "Check EMAIL_USERNAME and EMAIL_PASSWORD in your .env. "
-                "Gmail users: make sure you\'re using an App Password, not your account password."
+                "Check EMAIL_USERNAME / EMAIL_PASSWORD in your .env. "
+                "Gmail: use an App Password, not your main password."
             ) from exc
         except smtplib.SMTPException as exc:
             last_error = exc
             continue
 
     raise RuntimeError(
-        f"Cannot reach SMTP server '{EMAIL_SMTP}'. "
-        f"Tried ports {', '.join(str(a[1]) for a in attempts)}. "
-        "Possible causes:\n"
-        "  • Your network or ISP blocks outbound SMTP (common on mobile hotspots)\n"
-        "  • EMAIL_SMTP_SERVER is wrong in your .env\n"
-        "  • Firewall is blocking ports 465 and 587\n"
+        f"Cannot reach {EMAIL_SMTP} on ports 465/587. "
         f"Last error: {last_error}"
     )
+
+
+# ── Unified send (Resend → SMTP fallback) ───────────────────────────────────────
+
+def send_message(
+    to: str,
+    subject: str,
+    body: str,
+    attachment: dict | None = None,
+    in_reply_to: str = "",
+    references: str = "",
+) -> str:
+    """
+    Send an email using the best available transport.
+
+    Priority:
+      1. Resend API  — works on Render free tier (pure HTTPS)
+      2. SMTP        — local dev fallback
+
+    Returns a human-readable status string.
+    """
+    if RESEND_API_KEY:
+        return _send_via_resend(to, subject, body, attachment)
+    return _send_via_smtp(to, subject, body, attachment, in_reply_to, references)
+
+
+def _send_via_resend(
+    to: str,
+    subject: str,
+    body: str,
+    attachment: dict | None = None,
+) -> str:
+    """Send through Resend's HTTP API (port 443 — never blocked)."""
+    import resend  # optional dep; present when RESEND_API_KEY is set
+    resend.api_key = RESEND_API_KEY
+
+    params: dict = {
+        "from":    f"AI Agent <{EMAIL_USERNAME}>",
+        "to":      [to],
+        "subject": subject,
+        "text":    body,
+    }
+    if attachment:
+        import base64
+        with open(attachment["path"], "rb") as f:
+            params["attachments"] = [{
+                "filename": attachment["filename"],
+                "content":  base64.b64encode(f.read()).decode("utf-8"),
+            }]
+
+    resend.Emails.send(params)
+    return f"Sent via Resend to {to}."
+
+
+def _send_via_smtp(
+    to: str,
+    subject: str,
+    body: str,
+    attachment: dict | None = None,
+    in_reply_to: str = "",
+    references: str = "",
+) -> str:
+    """Send through SMTP (local dev — ports 465/587)."""
+    msg = build_message(to, subject, body, attachment, in_reply_to, references)
+    with smtp_connect() as srv:
+        srv.send_message(msg)
+    return f"Sent via SMTP to {to}."
+
 
 
 def build_message(

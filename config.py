@@ -36,6 +36,9 @@ EMAIL_IMAP      = os.getenv("EMAIL_IMAP_SERVER", "imap.gmail.com")
 EMAIL_SMTP      = os.getenv("EMAIL_SMTP_SERVER", "smtp.gmail.com")
 EMAIL_SMTP_PORT = int(os.getenv("EMAIL_SMTP_PORT", 465))
 
+# ── Resend (recommended for Render — bypasses SMTP port blocking) ——————————
+RESEND_API_KEY = os.getenv("RESEND_API_KEY")  # set this on Render, leave blank locally
+
 # ── Polling / monitoring ──────────────────────────────────────────────────────
 POLL_INTERVAL_MINS = int(os.getenv("POLL_INTERVAL_MINUTES", 5))
 

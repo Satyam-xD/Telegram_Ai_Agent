@@ -7,7 +7,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from config import AUTHORIZED_USER_ID
-from email_utils import build_message, cleanup_file, smtp_connect
+from email_utils import build_message, cleanup_file, send_message, smtp_connect
 
 
 def is_authorized(update: Update) -> bool:
@@ -50,19 +50,17 @@ async def send_draft(
     context: ContextTypes.DEFAULT_TYPE,
     draft: dict,
 ) -> None:
-    """Send a confirmed draft via SMTP and clean up state."""
+    """Send a confirmed draft via the best available transport and clean up state."""
     import logging
     logger = logging.getLogger(__name__)
     try:
         pending = context.user_data.get("pending_attachment")
-        msg = build_message(
+        send_message(
             draft["to"], draft["subject"], draft["body"],
             attachment=pending,
             in_reply_to=draft.get("in_reply_to", ""),
             references=draft.get("references", ""),
         )
-        with smtp_connect() as srv:
-            srv.send_message(msg)
         if pending:
             cleanup_file(pending["path"])
             context.user_data.pop("pending_attachment", None)
